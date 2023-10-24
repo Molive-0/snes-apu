@@ -7,6 +7,7 @@ homepage = "https://github.com/emu-rs/snes-apu"
 repository = "https://github.com/emu-rs/snes-apu"
 keywords = ["snes", "super", "nintendo", "spc", "emulator"]
 license = "BSD-2-Clause"
+edition = "2021"
 
 [dependencies]
 spc = "0.1.0"

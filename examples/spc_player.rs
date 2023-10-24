@@ -318,7 +318,7 @@ impl LinearResampler {
         }
     }
 
-    fn next(&mut self, input: &mut Iterator<Item = i16>) -> i16 {
+    fn next(&mut self, input: &mut dyn Iterator<Item = i16>) -> i16 {
         fn interpolate(a: i16, b: i16, num: u32, denom: u32) -> i16 {
             (((a as i32) * ((denom - num) as i32) + (b as i32) * (num as i32)) / (denom as i32)) as _
         }

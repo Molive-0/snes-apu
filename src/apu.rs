@@ -108,7 +108,7 @@ impl Apu {
                 0xf2 => self.dsp_reg_address,
                 0xf3 => self.dsp.as_mut().unwrap().get_register(self.dsp_reg_address),
 
-                0xfa ... 0xfc => 0,
+                0xfa ..= 0xfc => 0,
 
                 0xfd => self.timers[0].read_counter(),
                 0xfe => self.timers[1].read_counter(),
@@ -132,7 +132,7 @@ impl Apu {
                 0xf2 => { self.dsp_reg_address = value; },
                 0xf3 => { self.dsp.as_mut().unwrap().set_register(self.dsp_reg_address, value); },
 
-                0xf4 ... 0xf9 => { self.ram[address as usize] = value; },
+                0xf4 ..= 0xf9 => { self.ram[address as usize] = value; },
 
                 0xfa => { self.timers[0].set_target(value); },
                 0xfb => { self.timers[1].set_target(value); },
