@@ -58,6 +58,8 @@ pub struct Dsp<'apu> {
 
     pub voices: Vec<Box<Voice>>,
 
+    cycle: u8,
+
     left_filter: Filter,
     right_filter: Filter,
     pub output_buffer: VecDeque<(i16, i16)>,
@@ -82,6 +84,27 @@ pub struct Dsp<'apu> {
     echo_length: i32,
 
     resampling_mode: ResamplingMode,
+
+    temp_volume_l: u8,
+    temp_volume_r: u8,
+    temp_pitch: u16,
+    temp_ADSR_1: u8,
+    temp_ADSR_2: u8,
+    temp_gain: u8,
+    are_we_gain: bool,
+    temp_src_nmb: u8,
+    temp_brr_hdr:u8,
+    temp_brr_dat0:u8,
+    temp_brr_dat1:u8,
+
+    temp_non:u8,
+    temp_pmon:u8,
+
+    temp_envx:u8,
+    temp_outx:u8,
+    temp_dir: u8,
+
+    temp_directory: [(u16,u16);8],
 }
 
 impl<'apu> Dsp<'apu> {
@@ -91,6 +114,8 @@ impl<'apu> Dsp<'apu> {
             emulator: emulator,
 
             voices: vec![Voice::new(); NUM_VOICES],
+
+            cycle: 0,
 
             left_filter: Filter::new(),
             right_filter: Filter::new(),
@@ -116,6 +141,8 @@ impl<'apu> Dsp<'apu> {
             echo_length: 0,
 
             resampling_mode: resampling_mode,
+
+            ..Default::default(),
         });
         let ret_ptr = &mut *ret as *mut _;
         for _ in 0..NUM_VOICES {
@@ -135,8 +162,8 @@ impl<'apu> Dsp<'apu> {
     }
 
     #[inline]
-    fn emulator(&self) -> &mut Apu {
-        unsafe { &mut (*self.emulator) }
+    fn emulator(&self) -> Rc<Apu> {
+        self.emulator.upgrade().unwrap()
     }
 
     fn set_filter_coefficient(&mut self, index: i32, value: u8) {
@@ -193,13 +220,7 @@ impl<'apu> Dsp<'apu> {
                 self.noise = (feedback & 0x4000) ^ (self.noise >> 1);
             }
 
-            let mut are_any_voices_solod = false;
-            for voice in self.voices.iter() {
-                if voice.is_solod {
-                    are_any_voices_solod = true;
-                    break;
-                }
-            }
+            let mut are_any_voices_solod = self.voices.iter().any(voice::is_solod);
 
             let mut left_out = 0;
             let mut right_out = 0;
@@ -447,5 +468,35 @@ impl<'apu> Dsp<'apu> {
         for i in 0..NUM_VOICES {
             self.voices[i].echo_on = ((voice_mask as usize) & (1 << i)) != 0;
         }
+    }
+
+    fn run_a_cycle(&mut self) {
+        match (self.cycle) {
+            0 => {
+                
+            }
+            e => panic!("Invalid cycle {e}!"),
+        }
+        self.cycle += 1;
+        self.cycle &= 0x1F;
+    }
+
+    fn voice_part_1(&mut self, voicenow: usize, voicenextnext: usize)
+    {
+        temp_volume_l = self.voice[voicenow].vol_left;
+        temp_src_nmb = self.voice[voicenextnext].source;
+        temp_brr_dat1 = ;
+
+
+    }
+
+    fn voice_part_2(&mut self, voicenow: usize, voicenext: usize)
+    {
+        temp_volume_r = self.voice[voicenow].vol_right;
+        (temp_outx, temp_envx) = self.voice[voicenow].calculate(temp_ADSR_1, temp_ADSR_2, temp_brr_hdr, temp_brr_dat0, temp_brr_dat1, temp_pitch, temp_volume_l, temp_volume_r);
+        temp_pitch = self.voice[voicenext].source;
+        temp_ADSR = self.voice[voicenext].adsr0;
+
+        temp_directory[voicenext] = (self.emulator.read_u8) 
     }
 }

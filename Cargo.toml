@@ -12,6 +12,9 @@ edition = "2021"
 [dependencies]
 spc = "0.1.0"
 
+[patch.crates-io]
+spc = { git = "https://github.com/Molive-0/spc" }
+
 [dev-dependencies]
 cpal = "0.4.4"
 futures = "0.1.1"

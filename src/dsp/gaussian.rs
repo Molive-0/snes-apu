@@ -1,5 +1,5 @@
 pub const HALF_KERNEL_SIZE: usize = 2048;
-pub static HALF_KERNEL: [i16; HALF_KERNEL_SIZE] = [
+pub const HALF_KERNEL: [i16; HALF_KERNEL_SIZE] = [
        0,    0,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,
        1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,
        1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,    1,

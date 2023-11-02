@@ -1,7 +1,9 @@
+use std::rc::Weak;
+
 use super::apu::Apu;
 
-pub struct Smp {
-    emulator: *mut Apu,
+pub struct Smp<'apu> {
+    emulator: Weak<Apu<'apu>>,
 
     pub reg_pc: u16,
     pub reg_a: u8,
@@ -20,11 +22,11 @@ pub struct Smp {
 
     is_stopped: bool,
 
-    cycle_count: i32
+    cycle_count: usize,
 }
 
-impl Smp {
-    pub fn new(emulator: *mut Apu) -> Smp {
+impl Smp<'_> {
+    pub fn new(emulator: Weak<Apu>) -> Smp {
         Smp {
             emulator: emulator,
 
@@ -45,14 +47,7 @@ impl Smp {
 
             is_stopped: false,
 
-            cycle_count: 0
-        }
-    }
-
-    #[inline]
-    fn emulator(&self) -> &mut Apu {
-        unsafe {
-            &mut (*self.emulator)
+            cycle_count: 0,
         }
     }
 
@@ -75,31 +70,34 @@ impl Smp {
     }
 
     pub fn get_psw(&self) -> u8 {
-        ((if self.psw_n { 1 } else { 0 }) << 7) |
-        ((if self.psw_v { 1 } else { 0 }) << 6) |
-        ((if self.psw_p { 1 } else { 0 }) << 5) |
-        ((if self.psw_h { 1 } else { 0 }) << 3) |
-        ((if self.psw_z { 1 } else { 0 }) << 1) |
-        (if self.psw_c { 1 } else { 0 })
+        ((if self.psw_n { 1 } else { 0 }) << 7)
+            | ((if self.psw_v { 1 } else { 0 }) << 6)
+            | ((if self.psw_p { 1 } else { 0 }) << 5)
+            | ((if self.psw_h { 1 } else { 0 }) << 3)
+            | ((if self.psw_z { 1 } else { 0 }) << 1)
+            | (if self.psw_c { 1 } else { 0 })
     }
 
-    fn is_negative(value: u32) -> bool {
+    fn is_negative(value: u8) -> bool {
         (value & 0x80) != 0
     }
 
-    fn cycles(&mut self, num_cycles: i32) {
-        self.emulator().cpu_cycles_callback(num_cycles);
+    fn cycles(&mut self, num_cycles: usize) {
+        self.emulator
+            .upgrade()
+            .unwrap()
+            .cpu_cycles_callback(num_cycles);
         self.cycle_count += num_cycles;
     }
 
     fn read(&mut self, addr: u16) -> u8 {
         self.cycles(1);
-        self.emulator().read_u8(addr as u32)
+        self.emulator.upgrade().unwrap().read_u8(addr)
     }
 
     fn write(&mut self, addr: u16, value: u8) {
         self.cycles(1);
-        self.emulator().write_u8(addr as u32, value);
+        self.emulator.upgrade().unwrap().write_u8(addr, value);
     }
 
     fn read_pc(&mut self) -> u8 {
@@ -131,77 +129,76 @@ impl Smp {
         self.write(addr, value);
     }
 
-    fn set_psw_n_z(&mut self, x: u32) {
+    fn set_psw_n_z(&mut self, x: u8) {
         self.psw_n = Smp::is_negative(x);
         self.psw_z = x == 0;
     }
 
     fn adc(&mut self, x: u8, y: u8) -> u8 {
-        let x = x as i32;
-        let y = y as i32;
-        let r = x + y + (if self.psw_c { 1 } else { 0 });
-        self.psw_n = Smp::is_negative(r as u32);
+        let r;
+        (r, self.psw_c) = x.carrying_add(y, self.psw_c);
+        self.psw_n = Smp::is_negative(r);
         self.psw_v = (!(x ^ y) & (x ^ r) & 0x80) != 0;
         self.psw_h = ((x ^ y ^ r) & 0x10) != 0;
-        self.psw_z = (r as u8) == 0;
-        self.psw_c = r > 0xff;
-        r as u8
+        self.psw_z = r == 0;
+        r
     }
 
     fn and(&mut self, x: u8, y: u8) -> u8 {
         let ret = x & y;
-        self.set_psw_n_z(ret as u32);
+        self.set_psw_n_z(ret);
         ret
     }
 
     fn asl(&mut self, x: u8) -> u8 {
-        self.psw_c = Smp::is_negative(x as u32);
+        self.psw_c = Smp::is_negative(x);
         let ret = x << 1;
-        self.set_psw_n_z(ret as u32);
+        self.set_psw_n_z(ret);
         ret
     }
 
     fn cmp(&mut self, x: u8, y: u8) -> u8 {
-        let r = (x as i32) - (y as i32);
+        let r;
+        (r, self.psw_c) = x.overflowing_sub(y);
         self.psw_n = (r & 0x80) != 0;
-        self.psw_z = (r as u8) == 0;
-        self.psw_c = r >= 0;
+        self.psw_z = r == 0;
+        self.psw_c = !self.psw_c;
         x
     }
 
     fn dec(&mut self, x: u8) -> u8 {
         let ret = x.wrapping_sub(1);
-        self.set_psw_n_z(ret as u32);
+        self.set_psw_n_z(ret);
         ret
     }
 
     fn eor(&mut self, x: u8, y: u8) -> u8 {
         let ret = x ^ y;
-        self.set_psw_n_z(ret as u32);
+        self.set_psw_n_z(ret);
         ret
     }
 
     fn inc(&mut self, x: u8) -> u8 {
         let ret = x.wrapping_add(1);
-        self.set_psw_n_z(ret as u32);
+        self.set_psw_n_z(ret);
         ret
     }
 
     fn ld(&mut self, _: u8, y: u8) -> u8 {
-        self.set_psw_n_z(y as u32);
+        self.set_psw_n_z(y);
         y
     }
 
     fn lsr(&mut self, x: u8) -> u8 {
         self.psw_c = (x & 0x01) != 0;
         let ret = x >> 1;
-        self.set_psw_n_z(ret as u32);
+        self.set_psw_n_z(ret);
         ret
     }
 
     fn or(&mut self, x: u8, y: u8) -> u8 {
         let ret = x | y;
-        self.set_psw_n_z(ret as u32);
+        self.set_psw_n_z(ret);
         ret
     }
 
@@ -209,7 +206,7 @@ impl Smp {
         let carry = if self.psw_c { 1 } else { 0 };
         self.psw_c = (x & 0x80) != 0;
         let ret = (x << 1) | carry;
-        self.set_psw_n_z(ret as u32);
+        self.set_psw_n_z(ret);
         ret
     }
 
@@ -217,7 +214,7 @@ impl Smp {
         let carry = if self.psw_c { 0x80 } else { 0 };
         self.psw_c = (x & 0x01) != 0;
         let ret = carry | (x >> 1);
-        self.set_psw_n_z(ret as u32);
+        self.set_psw_n_z(ret);
         ret
     }
 
@@ -238,10 +235,11 @@ impl Smp {
     }
 
     fn cpw(&mut self, x: u16, y: u16) -> u16 {
-        let r = (x as i32) - (y as i32);
+        let r;
+        (r, self.psw_c) = x.overflowing_sub(y);
         self.psw_n = (r & 0x8000) != 0;
-        self.psw_z = (r as u16) == 0;
-        self.psw_c = r >= 0;
+        self.psw_z = r == 0;
+        self.psw_c = !self.psw_c;
         x
     }
 
@@ -274,11 +272,10 @@ impl Smp {
 
     fn branch(&mut self, cond: bool) {
         let offset = self.read_pc();
-        if !cond {
-            return;
+        if cond {
+            self.cycles(2);
+            self.reg_pc = self.reg_pc.wrapping_add(((offset as i8) as i16) as u16);
         }
-        self.cycles(2);
-        self.reg_pc = self.reg_pc.wrapping_add(((offset as i8) as i16) as u16);
     }
 
     fn branch_bit(&mut self, x: u8) {
@@ -286,11 +283,10 @@ impl Smp {
         let sp = self.read_dp(addr);
         let y = self.read_pc();
         self.cycles(1);
-        if ((sp & (1 << ((x as i32) >> 5))) != 0) == ((x & 0x10) != 0) {
-            return;
+        if ((sp & (1 << ((x as i32) >> 5))) != 0) != ((x & 0x10) != 0) {
+            self.cycles(2);
+            self.reg_pc = self.reg_pc.wrapping_add(((y as i8) as i16) as u16);
         }
-        self.cycles(2);
-        self.reg_pc = self.reg_pc.wrapping_add(((y as i8) as i16) as u16);
     }
 
     fn push(&mut self, x: u8) {
@@ -305,37 +301,46 @@ impl Smp {
         x &= 0x1fff;
         let mut y = self.read(x) as u16;
         match opcode >> 5 {
-            0 | 1 => { // orc addr:bit; orc !addr:bit
+            0 | 1 => {
+                // orc addr:bit; orc !addr:bit
                 self.cycles(1);
                 self.psw_c |= ((y & (1 << bit)) != 0) ^ ((opcode & 0x20) != 0);
             }
-            2 | 3 => { // and addr:bit; and larrd:bit
+            2 | 3 => {
+                // and addr:bit; and larrd:bit
                 self.psw_c &= ((y & (1 << bit)) != 0) ^ ((opcode & 0x20) != 0);
             }
-            4 => { // eor addr:bit
+            4 => {
+                // eor addr:bit
                 self.cycles(1);
                 self.psw_c ^= (y & (1 << bit)) != 0;
             }
-            5 => { // ldc addr:bit
+            5 => {
+                // ldc addr:bit
                 self.psw_c = (y & (1 << bit)) != 0;
             }
-            6 => { // stc addr:bit
+            6 => {
+                // stc addr:bit
                 self.cycles(1);
                 y = (y & !(1 << bit)) | ((if self.psw_c { 1 } else { 0 }) << bit);
                 self.write(x, y as u8);
             }
-            7 => { // not addr:bit
+            7 => {
+                // not addr:bit
                 y ^= 1 << bit;
                 self.write(x, y as u8);
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
     fn set_bit(&mut self, opcode: u8) {
         let addr = self.read_pc();
         let x = self.read_dp(addr) & !(1 << (opcode >> 5));
-        self.write_dp(addr, x | ((if opcode & 0x10 == 0 { 1 } else { 0 }) << (opcode >> 5)));
+        self.write_dp(
+            addr,
+            x | ((if opcode & 0x10 == 0 { 1 } else { 0 }) << (opcode >> 5)),
+        );
     }
 
     fn test_addr(&mut self, x: bool) {
@@ -343,7 +348,7 @@ impl Smp {
         addr |= (self.read_pc() as u16) << 8;
         let y = self.read(addr);
         let reg_a = self.reg_a;
-        self.set_psw_n_z((reg_a.wrapping_sub(y)) as u32);
+        self.set_psw_n_z(reg_a.wrapping_sub(y));
         self.read(addr);
         self.write(addr, if x { y | reg_a } else { y & !reg_a });
     }
@@ -353,11 +358,10 @@ impl Smp {
         let x = self.read_dp(addr);
         let y = self.read_pc();
         self.cycles(1);
-        if self.reg_a == x {
-            return;
+        if self.reg_a != x {
+            self.cycles(2);
+            self.reg_pc = self.reg_pc.wrapping_add(((y as i8) as i16) as u16);
         }
-        self.cycles(2);
-        self.reg_pc = self.reg_pc.wrapping_add(((y as i8) as i16) as u16);
     }
 
     fn bne_dp_dec(&mut self) {
@@ -365,11 +369,10 @@ impl Smp {
         let x = self.read_dp(addr).wrapping_sub(1);
         self.write_dp(addr, x);
         let y = self.read_pc();
-        if x == 0 {
-            return;
+        if x != 0 {
+            self.cycles(2);
+            self.reg_pc = self.reg_pc.wrapping_add(((y as i8) as i16) as u16);
         }
-        self.cycles(2);
-        self.reg_pc = self.reg_pc.wrapping_add(((y as i8) as i16) as u16);
     }
 
     fn bne_dp_x(&mut self) {
@@ -379,22 +382,20 @@ impl Smp {
         let x = self.read_dp(addr.wrapping_add(reg_x));
         let y = self.read_pc();
         self.cycles(1);
-        if self.reg_a == x {
-            return;
+        if self.reg_a != x {
+            self.cycles(2);
+            self.reg_pc = self.reg_pc.wrapping_add(((y as i8) as i16) as u16);
         }
-        self.cycles(2);
-        self.reg_pc = self.reg_pc.wrapping_add(((y as i8) as i16) as u16);
     }
 
     fn bne_y_dec(&mut self) {
         let x = self.read_pc();
         self.cycles(2);
         self.reg_y = self.reg_y.wrapping_sub(1);
-        if self.reg_y == 0 {
-            return;
+        if self.reg_y != 0 {
+            self.cycles(2);
+            self.reg_pc = self.reg_pc.wrapping_add(((x as i8) as i16) as u16);
         }
-        self.cycles(2);
-        self.reg_pc = self.reg_pc.wrapping_add(((x as i8) as i16) as u16);
     }
 
     fn brk(&mut self) {
@@ -432,7 +433,7 @@ impl Smp {
             self.reg_a = self.reg_a.wrapping_add(0x06);
         }
         let reg_a = self.reg_a;
-        self.set_psw_n_z(reg_a as u32);
+        self.set_psw_n_z(reg_a);
     }
 
     fn das(&mut self) {
@@ -445,7 +446,7 @@ impl Smp {
             self.reg_a = self.reg_a.wrapping_sub(0x06);
         }
         let reg_a = self.reg_a;
-        self.set_psw_n_z(reg_a as u32);
+        self.set_psw_n_z(reg_a);
     }
 
     fn div_ya(&mut self) {
@@ -462,7 +463,7 @@ impl Smp {
             self.reg_y = (reg_x + (ya - (reg_x << 9)) % (256 - reg_x)) as u8;
         }
         let reg_a = self.reg_a;
-        self.set_psw_n_z(reg_a as u32);
+        self.set_psw_n_z(reg_a);
     }
 
     fn jmp_addr(&mut self) {
@@ -520,7 +521,7 @@ impl Smp {
         self.reg_x = self.reg_x.wrapping_add(1);
         self.cycles(1);
         let reg_a = self.reg_a;
-        self.set_psw_n_z(reg_a as u32);
+        self.set_psw_n_z(reg_a);
     }
 
     fn mul_ya(&mut self) {
@@ -529,7 +530,7 @@ impl Smp {
         self.reg_a = ya as u8;
         self.reg_y = (ya >> 8) as u8;
         let reg_y = self.reg_y;
-        self.set_psw_n_z(reg_y as u32);
+        self.set_psw_n_z(reg_y);
     }
 
     fn nop(&mut self) {
@@ -616,39 +617,39 @@ impl Smp {
         self.cycles(4);
         self.reg_a = (self.reg_a >> 4) | (self.reg_a << 4);
         let reg_a = self.reg_a;
-        self.set_psw_n_z(reg_a as u32);
+        self.set_psw_n_z(reg_a);
     }
 
-    pub fn run(&mut self, target_cycles: i32) -> i32 {
+    pub fn run(&mut self, target_cycles: usize) -> usize {
         macro_rules! adjust {
-            ($op:ident, $x:expr) => ({
+            ($op:ident, $x:expr) => {{
                 self.cycles(1);
                 let temp = $x;
                 $x = self.$op(temp);
-            })
+            }};
         }
 
         macro_rules! adjust_addr {
-            ($op:ident) => ({
+            ($op:ident) => {{
                 let mut addr = self.read_pc() as u16;
                 addr |= (self.read_pc() as u16) << 8;
                 let mut result = self.read(addr);
                 result = self.$op(result);
                 self.write(addr, result);
-            })
+            }};
         }
 
         macro_rules! adjust_dp {
-            ($op:ident) => ({
+            ($op:ident) => {{
                 let addr = self.read_pc();
                 let mut result = self.read_dp(addr);
                 result = self.$op(result);
                 self.write_dp(addr, result);
-            })
+            }};
         }
 
         macro_rules! adjust_dp_x {
-            ($op:ident) => ({
+            ($op:ident) => {{
                 let addr = self.read_pc();
                 self.cycles(1);
                 let mut reg_x = self.reg_x;
@@ -656,21 +657,21 @@ impl Smp {
                 result = self.$op(result);
                 reg_x = self.reg_x;
                 self.write_dp(addr.wrapping_add(reg_x), result);
-            })
+            }};
         }
-
+        //TODO CONTINUE ASSESSMENT FROM HERE
         macro_rules! read_addr {
-            ($op:ident, $x:expr) => ({
+            ($op:ident, $x:expr) => {{
                 let mut addr = self.read_pc() as u16;
                 addr |= (self.read_pc() as u16) << 8;
                 let y = self.read(addr);
                 let temp = $x;
                 $x = self.$op(temp, y);
-            })
+            }};
         }
 
         macro_rules! read_addr_i {
-            ($op:ident, $x:expr) => ({
+            ($op:ident, $x:expr) => {{
                 let mut addr = self.read_pc() as u16;
                 addr |= (self.read_pc() as u16) << 8;
                 self.cycles(1);
@@ -678,39 +679,39 @@ impl Smp {
                 let y = self.read(addr.wrapping_add(temp as u16));
                 let reg_a = self.reg_a;
                 self.reg_a = self.$op(reg_a, y);
-            })
+            }};
         }
 
         macro_rules! read_const {
-            ($op:ident, $x:expr) => ({
+            ($op:ident, $x:expr) => {{
                 let y = self.read_pc();
                 let temp = $x;
                 $x = self.$op(temp, y);
-            })
+            }};
         }
 
         macro_rules! read_dp {
-            ($op:ident, $x:expr) => ({
+            ($op:ident, $x:expr) => {{
                 let addr = self.read_pc();
                 let y = self.read_dp(addr);
                 let temp = $x;
                 $x = self.$op(temp, y);
-            })
+            }};
         }
 
         macro_rules! read_dp_i {
-            ($op:ident, $x:expr, $y:expr) => ({
+            ($op:ident, $x:expr, $y:expr) => {{
                 let addr = self.read_pc();
                 self.cycles(1);
                 let mut temp = $y;
                 let z = self.read_dp(addr.wrapping_add(temp));
                 temp = $x;
                 $x = self.$op(temp, z);
-            })
+            }};
         }
 
         macro_rules! read_dpw {
-            ($op:ident, $is_cpw:expr) => ({
+            ($op:ident, $is_cpw:expr) => {{
                 let mut addr = self.read_pc();
                 let mut x = self.read_dp(addr) as u16;
                 addr = addr.wrapping_add(1);
@@ -721,11 +722,11 @@ impl Smp {
                 let ya = self.get_reg_ya();
                 let ya = self.$op(ya, x);
                 self.set_reg_ya(ya);
-            })
+            }};
         }
 
         macro_rules! read_i_dp_x {
-            ($op:ident) => ({
+            ($op:ident) => {{
                 let mut addr = self.read_pc().wrapping_add(self.reg_x);
                 self.cycles(1);
                 let mut addr2 = self.read_dp(addr) as u16;
@@ -734,11 +735,11 @@ impl Smp {
                 let x = self.read(addr2);
                 let reg_a = self.reg_a;
                 self.reg_a = self.$op(reg_a, x);
-            })
+            }};
         }
 
         macro_rules! read_i_dp_y {
-            ($op:ident) => ({
+            ($op:ident) => {{
                 let mut addr = self.read_pc();
                 self.cycles(1);
                 let mut addr2 = self.read_dp(addr) as u16;
@@ -748,42 +749,42 @@ impl Smp {
                 let x = self.read(addr2.wrapping_add(reg_y as u16));
                 let reg_a = self.reg_a;
                 self.reg_a = self.$op(reg_a, x);
-            })
+            }};
         }
 
         macro_rules! read_i_x {
-            ($op:ident) => ({
+            ($op:ident) => {{
                 self.cycles(1);
                 let reg_x = self.reg_x;
                 let x = self.read_dp(reg_x);
                 let reg_a = self.reg_a;
                 self.reg_a = self.$op(reg_a, x);
-            })
+            }};
         }
 
         macro_rules! set_flag {
-            ($x:expr, $y:expr, $is_dest_psw_i:expr) => ({
+            ($x:expr, $y:expr, $is_dest_psw_i:expr) => {{
                 self.cycles(1);
                 if $is_dest_psw_i {
                     self.cycles(1);
                 }
                 $x = $y;
-            })
+            }};
         }
 
         macro_rules! transfer {
-            ($x:expr, $y:expr, $is_dest_reg_sp:expr) => ({
+            ($x:expr, $y:expr, $is_dest_reg_sp:expr) => {{
                 self.cycles(1);
                 $y = $x;
                 if !$is_dest_reg_sp {
                     let temp = $y;
-                    self.set_psw_n_z(temp as u32);
+                    self.set_psw_n_z(temp);
                 }
-            })
+            }};
         }
 
         macro_rules! write_dp_const {
-            ($op:ident, $is_cmp:expr) => ({
+            ($op:ident, $is_cmp:expr) => {{
                 let x = self.read_pc();
                 let addr = self.read_pc();
                 let mut y = self.read_dp(addr);
@@ -793,11 +794,11 @@ impl Smp {
                 } else {
                     self.cycles(1);
                 }
-            })
+            }};
         }
 
         macro_rules! write_dp_dp {
-            ($op:ident, $is_cmp:expr, $is_st:expr) => ({
+            ($op:ident, $is_cmp:expr, $is_st:expr) => {{
                 let addr = self.read_pc();
                 let x = self.read_dp(addr);
                 let y = self.read_pc();
@@ -808,11 +809,11 @@ impl Smp {
                 } else {
                     self.cycles(1);
                 }
-            })
+            }};
         }
 
         macro_rules! write_i_x_i_y {
-            ($op:ident, $is_cmp:expr) => ({
+            ($op:ident, $is_cmp:expr) => {{
                 self.cycles(1);
                 let reg_y = self.reg_y;
                 let x = self.read_dp(reg_y);
@@ -825,47 +826,47 @@ impl Smp {
                 } else {
                     self.cycles(1);
                 }
-            })
+            }};
         }
 
         macro_rules! pull {
-            ($x:expr) => ({
+            ($x:expr) => {{
                 self.cycles(2);
                 $x = self.read_sp();
-            })
+            }};
         }
 
         macro_rules! write_dp_imm {
-            ($x:expr) => ({
+            ($x:expr) => {{
                 let addr = self.read_pc();
                 self.read_dp(addr);
                 let temp = $x;
                 self.write_dp(addr, temp);
-            })
+            }};
         }
 
         macro_rules! write_dp_i {
-            ($x:expr, $y:expr) => ({
+            ($x:expr, $y:expr) => {{
                 let addr = self.read_pc().wrapping_add($y);
                 self.cycles(1);
                 self.read_dp(addr);
                 let temp = $x;
                 self.write_dp(addr, temp);
-            })
+            }};
         }
 
         macro_rules! write_addr {
-            ($x:expr) => ({
+            ($x:expr) => {{
                 let mut addr = self.read_pc() as u16;
                 addr |= (self.read_pc() as u16) << 8;
                 self.read(addr);
                 let temp = $x;
                 self.write(addr, temp);
-            })
+            }};
         }
 
         macro_rules! write_addr_i {
-            ($x:expr) => ({
+            ($x:expr) => {{
                 let mut addr = self.read_pc() as u16;
                 addr |= (self.read_pc() as u16) << 8;
                 self.cycles(1);
@@ -873,7 +874,7 @@ impl Smp {
                 self.read(addr);
                 let reg_a = self.reg_a;
                 self.write(addr, reg_a);
-            })
+            }};
         }
 
         self.cycle_count = 0;
@@ -894,11 +895,17 @@ impl Smp {
                     0x0a => self.set_addr_bit(opcode),
                     0x0b => adjust_dp!(asl),
                     0x0c => adjust_addr!(asl),
-                    0x0d => { let psw = self.get_psw(); self.push(psw); },
+                    0x0d => {
+                        let psw = self.get_psw();
+                        self.push(psw);
+                    }
                     0x0e => self.test_addr(true),
                     0x0f => self.brk(),
 
-                    0x10 => { let psw_n = self.psw_n; self.branch(!psw_n); },
+                    0x10 => {
+                        let psw_n = self.psw_n;
+                        self.branch(!psw_n);
+                    }
                     0x11 => self.jst(opcode),
                     0x12 => self.set_bit(opcode),
                     0x13 => self.branch_bit(opcode),
@@ -928,11 +935,17 @@ impl Smp {
                     0x2a => self.set_addr_bit(opcode),
                     0x2b => adjust_dp!(rol),
                     0x2c => adjust_addr!(rol),
-                    0x2d => { let reg_a = self.reg_a; self.push(reg_a); },
+                    0x2d => {
+                        let reg_a = self.reg_a;
+                        self.push(reg_a);
+                    }
                     0x2e => self.bne_dp(),
                     0x2f => self.branch(true),
 
-                    0x30 => { let psw_n = self.psw_n; self.branch(psw_n); },
+                    0x30 => {
+                        let psw_n = self.psw_n;
+                        self.branch(psw_n);
+                    }
                     0x31 => self.jst(opcode),
                     0x32 => self.set_bit(opcode),
                     0x33 => self.branch_bit(opcode),
@@ -962,11 +975,17 @@ impl Smp {
                     0x4a => self.set_addr_bit(opcode),
                     0x4b => adjust_dp!(lsr),
                     0x4c => adjust_addr!(lsr),
-                    0x4d => { let reg_x = self.reg_x; self.push(reg_x); },
+                    0x4d => {
+                        let reg_x = self.reg_x;
+                        self.push(reg_x);
+                    }
                     0x4e => self.test_addr(false),
                     0x4f => self.jsp_dp(),
 
-                    0x50 => { let psw_v = self.psw_v; self.branch(!psw_v); },
+                    0x50 => {
+                        let psw_v = self.psw_v;
+                        self.branch(!psw_v);
+                    }
                     0x51 => self.jst(opcode),
                     0x52 => self.set_bit(opcode),
                     0x53 => self.branch_bit(opcode),
@@ -996,11 +1015,17 @@ impl Smp {
                     0x6a => self.set_addr_bit(opcode),
                     0x6b => adjust_dp!(ror),
                     0x6c => adjust_addr!(ror),
-                    0x6d => { let reg_y = self.reg_y; self.push(reg_y); },
+                    0x6d => {
+                        let reg_y = self.reg_y;
+                        self.push(reg_y);
+                    }
                     0x6e => self.bne_dp_dec(),
                     0x6f => self.rts(),
 
-                    0x70 => { let psw_v = self.psw_v; self.branch(psw_v); },
+                    0x70 => {
+                        let psw_v = self.psw_v;
+                        self.branch(psw_v);
+                    }
                     0x71 => self.jst(opcode),
                     0x72 => self.set_bit(opcode),
                     0x73 => self.branch_bit(opcode),
@@ -1034,7 +1059,10 @@ impl Smp {
                     0x8e => self.plp(),
                     0x8f => write_dp_const!(st, false),
 
-                    0x90 => { let psw_c = self.psw_c; self.branch(!psw_c); },
+                    0x90 => {
+                        let psw_c = self.psw_c;
+                        self.branch(!psw_c);
+                    }
                     0x91 => self.jst(opcode),
                     0x92 => self.set_bit(opcode),
                     0x93 => self.branch_bit(opcode),
@@ -1068,7 +1096,10 @@ impl Smp {
                     0xae => pull!(self.reg_a),
                     0xaf => self.sta_i_x_inc(),
 
-                    0xb0 => { let psw_c = self.psw_c; self.branch(psw_c); },
+                    0xb0 => {
+                        let psw_c = self.psw_c;
+                        self.branch(psw_c);
+                    }
                     0xb1 => self.jst(opcode),
                     0xb2 => self.set_bit(opcode),
                     0xb3 => self.branch_bit(opcode),
@@ -1102,7 +1133,10 @@ impl Smp {
                     0xce => pull!(self.reg_x),
                     0xcf => self.mul_ya(),
 
-                    0xd0 => { let psw_z = self.psw_z; self.branch(!psw_z); },
+                    0xd0 => {
+                        let psw_z = self.psw_z;
+                        self.branch(!psw_z);
+                    }
                     0xd1 => self.jst(opcode),
                     0xd2 => self.set_bit(opcode),
                     0xd3 => self.branch_bit(opcode),
@@ -1136,7 +1170,10 @@ impl Smp {
                     0xee => pull!(self.reg_y),
                     0xef => self.sleep_stop(),
 
-                    0xf0 => { let psw_z = self.psw_z; self.branch(psw_z); },
+                    0xf0 => {
+                        let psw_z = self.psw_z;
+                        self.branch(psw_z);
+                    }
                     0xf1 => self.jst(opcode),
                     0xf2 => self.set_bit(opcode),
                     0xf3 => self.branch_bit(opcode),
@@ -1153,7 +1190,7 @@ impl Smp {
                     0xfe => self.bne_y_dec(),
                     0xff => self.sleep_stop(),
 
-                    _ => panic!("Invalid opcode")
+                    _ => panic!("Invalid opcode"),
                 }
             } else {
                 self.cycles(2);

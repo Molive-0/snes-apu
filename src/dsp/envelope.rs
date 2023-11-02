@@ -1,43 +1,40 @@
+use std::rc::Weak;
+
 use super::dsp::Dsp;
 
 enum Mode {
     Attack,
     Decay,
     Sustain,
-    Release
+    Release,
 }
 
-pub struct Envelope {
-    dsp: *mut Dsp,
+pub struct Envelope<'apu> {
+    dsp: Weak<Dsp<'apu>>,
 
     pub adsr0: u8,
     pub adsr1: u8,
     pub gain: u8,
+    pub envx: u8,
 
     mode: Mode,
     pub level: i32,
-    hidden_level: i32
+    hidden_level: i32,
 }
 
-impl Envelope {
-    pub fn new(dsp: *mut Dsp) -> Envelope {
+impl Envelope<'_> {
+    pub fn new(dsp: Weak<Dsp>) -> Envelope {
         Envelope {
             dsp: dsp,
 
             adsr0: 0,
             adsr1: 0,
             gain: 0,
+            envx: 0,
 
             mode: Mode::Release,
             level: 0,
-            hidden_level: 0
-        }
-    }
-
-    #[inline]
-    fn dsp(&self) -> &mut Dsp {
-        unsafe {
-            &mut (*self.dsp)
+            hidden_level: 0,
         }
     }
 
@@ -60,7 +57,7 @@ impl Envelope {
                     env = 0;
                 }
                 self.level = env;
-            },
+            }
             _ => {
                 let rate: i32;
                 let env_data = self.adsr1 as i32;
@@ -70,14 +67,14 @@ impl Envelope {
                         Mode::Attack => {
                             rate = ((self.adsr0 as i32) & 0x0f) * 2 + 1;
                             env += if rate < 31 { 0x20 } else { 0x400 };
-                        },
+                        }
                         _ => {
                             env -= 1;
                             env -= env >> 8;
                             match self.mode {
                                 Mode::Decay => {
                                     rate = (((self.adsr0 as i32) >> 3) & 0x0e) + 0x10;
-                                },
+                                }
                                 _ => {
                                     rate = env_data & 0x1f;
                                 }
@@ -126,7 +123,7 @@ impl Envelope {
                     }
                 }
 
-                if self.dsp().read_counter(rate) {
+                if self.dsp.upgrade().unwrap().read_counter(rate) {
                     return;
                 }
                 self.level = env;
